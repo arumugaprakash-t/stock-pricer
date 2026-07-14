@@ -41,6 +41,10 @@ stock-pricer/
    - Developed a zero-latency client-side DCF engine in `App.jsx` linked to interactive sliders (Years 1–5 growth, Years 6–10 growth, Discount rate, Terminal rate, Margin of Safety, and Maintenance CapEx percentage).
    - Created custom bar graphs representing the present values of projected cash flows.
    - Built a financial statement viewer for side-by-side quarterly vs. annual statement inspection.
+4. **Unified Architecture Setup:**
+   - Consolidated backend and frontend into a single Uvicorn Python web service deployment.
+   - Mounted compiled React frontend SPA assets (`frontend/dist`) directly onto FastAPI's root `/` path.
+   - Changed API endpoints to query relative URLs in production to prevent CORS and network resolution issues.
 
 ---
 
@@ -96,15 +100,13 @@ git push -u origin main
 3. Click **New Blueprint Instance**.
 4. Connect the GitHub repository you just pushed.
 5. Render will automatically parse the [render.yaml](file:///Users/prakash/Desktop/Projects/stock-pricer/render.yaml) file:
-   * It will create a **Web Service** for the FastAPI backend (`stock-pricer-backend`).
-   * It will create a **Static Site** for the React frontend (`stock-pricer-frontend`).
-   * It will automatically capture the backend's host and feed it to the frontend build environment as `VITE_API_URL`.
+   * It will create a single **Web Service** (`stock-pricer`) that builds both the React app and runs the FastAPI backend.
 6. Click **Approve** or **Apply**.
 
 ---
 
 ### Step C: Git-Ops Continuous Deployment
-Once the initial Blueprint is created, any changes you push to GitHub will automatically trigger builds and redeployments for both services in the background:
+Once the initial Blueprint is created, any changes you push to GitHub will automatically trigger builds and redeployments for the service in the background:
 ```bash
 # To update your live app:
 git add .
@@ -116,18 +118,7 @@ No need to log in to the Render dashboard again!
 ---
 
 ### Step D: Production Configuration Adjustments
-* **Dynamic API URL:** In [frontend/src/App.jsx](file:///Users/prakash/Desktop/Projects/stock-pricer/frontend/src/App.jsx), the API URL is dynamically retrieved from `import.meta.env.VITE_API_URL` with a fallback to `http://localhost:8000` for local development. Render takes care of injecting this variable automatically during the build step.
-* **CORS Restrictions:** For local development, the FastAPI backend allows all origins (`allow_origins=["*"]`). For a production app, you can modify `backend/main.py` to only allow your React static site domain for enhanced security:
-  ```python
-  app.add_middleware(
-      CORSMiddleware,
-      allow_origins=[
-          "http://localhost:5173",
-          "https://your-frontend-subdomain.onrender.com"
-      ],
-      allow_credentials=True,
-      allow_methods=["*"],
-      allow_headers=["*"],
-  )
-  ```
+* **Dynamic API URL:** In [frontend/src/App.jsx](file:///Users/prakash/Desktop/Projects/stock-pricer/frontend/src/App.jsx), the API URL is dynamically retrieved from `import.meta.env.VITE_API_URL` with a fallback to `http://localhost:8000` for local development, and an empty string `''` (relative path) for production since both are served from the same domain.
+* **CORS Restrictions:** For local development, the FastAPI backend allows all origins (`allow_origins=["*"]`). For a production app, you can modify `backend/main.py` to restrict origins to your custom domain for enhanced security.
+
 
