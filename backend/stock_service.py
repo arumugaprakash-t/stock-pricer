@@ -1,0 +1,355 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import traceback
+
+def safe_float(val):
+    if pd.isna(val) or val is None:
+        return 0.0
+    try:
+        return float(val)
+    except:
+        return 0.0
+
+def safe_int(val):
+    if pd.isna(val) or val is None:
+        return 0
+    try:
+        return int(val)
+    except:
+        return 0
+
+def get_row_value(df, alternative_keys, col_idx=0):
+    """
+    Safely retrieves a value from a DataFrame row corresponding to alternative keys.
+    Returns 0.0 if not found or if the value is NaN.
+    """
+    if df is None or df.empty:
+        return 0.0
+    for key in alternative_keys:
+        if key in df.index:
+            val = df.loc[key]
+            if isinstance(val, pd.Series):
+                # If it's a series, return the value at col_idx (latest column is usually first)
+                if col_idx < len(val):
+                    return safe_float(val.iloc[col_idx])
+            else:
+                return safe_float(val)
+    return 0.0
+
+def extract_statement_data(df):
+    """
+    Converts a pandas DataFrame statement to a dictionary structure friendly for JSON response.
+    Transposes it so dates are keys, and keys contain the metrics.
+    """
+    if df is None or df.empty:
+        return []
+    
+    # Transpose so columns are metrics and index is Timestamp/Date
+    df_t = df.T
+    data = []
+    for date, row in df_t.iterrows():
+        date_str = str(date.date()) if hasattr(date, "date") else str(date)
+        row_dict = {"date": date_str}
+        for col in df_t.columns:
+            val = row[col]
+            row_dict[col] = None if pd.isna(val) else float(val)
+        data.append(row_dict)
+    return data
+
+def calculate_dcf(
+    current_price,
+    shares_outstanding,
+    owner_earnings_base,
+    growth_rate_1_5,
+    growth_rate_6_10,
+    discount_rate,
+    terminal_growth_rate,
+    cash,
+    debt,
+    margin_of_safety
+):
+    """
+    Performs the Warren Buffett Owner Earnings Discounted Cash Flow (DCF) valuation.
+    Rates should be provided as decimals (e.g. 0.10 for 10%).
+    """
+    if not shares_outstanding or shares_outstanding <= 0:
+        return {
+            "intrinsic_value_per_share": 0.0,
+            "buy_target_price": 0.0,
+            "status": "error",
+            "message": "Invalid shares outstanding"
+        }
+    
+    # Project cash flows
+    projected_flows = []
+    current_flow = owner_earnings_base
+    
+    # Year 1 to 5 growth
+    for year in range(1, 6):
+        current_flow = current_flow * (1 + growth_rate_1_5)
+        projected_flows.append(current_flow)
+        
+    # Year 6 to 10 growth
+    for year in range(6, 11):
+        current_flow = current_flow * (1 + growth_rate_6_10)
+        projected_flows.append(current_flow)
+        
+    # Discount back to present value
+    pv_factors = [1 / ((1 + discount_rate) ** year) for year in range(1, 11)]
+    pv_flows = [flow * factor for flow, factor in zip(projected_flows, pv_factors)]
+    sum_pv_flows = sum(pv_flows)
+    
+    # Calculate Terminal Value at Year 10
+    # Formula: CF10 * (1 + terminal_growth_rate) / (discount_rate - terminal_growth_rate)
+    cf_10 = projected_flows[-1]
+    
+    # Avoid division by zero
+    diff = discount_rate - terminal_growth_rate
+    if diff <= 0:
+        diff = 0.01  # safe fallback
+        
+    terminal_value = (cf_10 * (1 + terminal_growth_rate)) / diff
+    pv_terminal_value = terminal_value * pv_factors[-1]
+    
+    # Total Intrinsic Value of the Business
+    intrinsic_value_company = sum_pv_flows + pv_terminal_value
+    
+    # Equity value = Company Value + Cash - Debt
+    intrinsic_value_equity = intrinsic_value_company + cash - debt
+    
+    # Value per share
+    intrinsic_value_per_share = intrinsic_value_equity / shares_outstanding
+    
+    # Target Buy Price (with Margin of Safety)
+    buy_target_price = intrinsic_value_per_share * (1 - margin_of_safety)
+    
+    # Calculate upside/downside based on current price
+    margin = 0.0
+    if current_price > 0:
+        margin = (intrinsic_value_per_share - current_price) / current_price
+        
+    # Recommendation status
+    recommendation = "OVERVALUED"
+    if current_price <= buy_target_price:
+        recommendation = "BUY"
+    elif current_price <= intrinsic_value_per_share:
+        recommendation = "FAIR VALUE / HOLD"
+        
+    # Package details of projection for visualization
+    projections = []
+    for yr in range(1, 11):
+        projections.append({
+            "year": yr,
+            "projected_cash_flow": float(projected_flows[yr - 1]),
+            "present_value": float(pv_flows[yr - 1])
+        })
+        
+    return {
+        "status": "success",
+        "intrinsic_value_company": float(intrinsic_value_company),
+        "intrinsic_value_equity": float(intrinsic_value_equity),
+        "intrinsic_value_per_share": float(intrinsic_value_per_share),
+        "buy_target_price": float(buy_target_price),
+        "current_price": float(current_price),
+        "upside_downside_pct": float(margin * 100),
+        "recommendation": recommendation,
+        "projections": projections,
+        "terminal_value": float(terminal_value),
+        "pv_terminal_value": float(pv_terminal_value),
+        "sum_pv_flows": float(sum_pv_flows)
+    }
+
+def get_stock_data(symbol: str):
+    """
+    Fetches full stock data from yfinance and performs standard preprocessing.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        
+        # Safe info extraction
+        name = info.get("longName") or info.get("shortName") or symbol
+        
+        # Fallback to history close if currentPrice isn't in info
+        current_price = safe_float(info.get("currentPrice") or info.get("regularMarketPrice"))
+        if current_price == 0.0:
+            hist = ticker.history(period="1d")
+            if not hist.empty:
+                current_price = safe_float(hist["Close"].iloc[-1])
+                
+        currency = info.get("currency", "USD")
+        # Deduce currency if possible
+        if symbol.endswith(".NS") or symbol.endswith(".BO"):
+            currency = "INR"
+            
+        shares_outstanding = safe_int(info.get("sharesOutstanding"))
+        
+        # If shares outstanding is missing from info, try getting from latest balance sheet
+        if shares_outstanding == 0:
+            bal_sheet = ticker.balance_sheet
+            if not bal_sheet.empty and "Ordinary Shares Number" in bal_sheet.index:
+                shares_outstanding = safe_int(bal_sheet.loc["Ordinary Shares Number"].iloc[0])
+            elif not bal_sheet.empty and "Share Issued" in bal_sheet.index:
+                shares_outstanding = safe_int(bal_sheet.loc["Share Issued"].iloc[0])
+        
+        market_cap = safe_float(info.get("marketCap") or (current_price * shares_outstanding))
+        
+        # Fetch statements
+        annual_financials = ticker.financials
+        annual_balance_sheet = ticker.balance_sheet
+        annual_cashflow = ticker.cashflow
+        
+        q_financials = ticker.quarterly_financials
+        q_balance_sheet = ticker.quarterly_balance_sheet
+        q_cashflow = ticker.quarterly_cashflow
+        
+        # Extracted Balance Sheet items (Latest)
+        # 1. Cash & Equivalents
+        cash_keys = [
+            "Cash Cash Equivalents And Short Term Investments",
+            "Cash And Cash Equivalents",
+            "Cash Financial",
+            "Cash Cash Equivalents And Marketable Securities"
+        ]
+        cash = get_row_value(annual_balance_sheet, cash_keys)
+        # If missing from annual, try quarterly balance sheet
+        if cash == 0.0:
+            cash = get_row_value(q_balance_sheet, cash_keys)
+            
+        # 2. Total Debt
+        debt_keys = ["Total Debt", "Net Debt"]
+        debt = get_row_value(annual_balance_sheet, debt_keys)
+        if debt == 0.0:
+            debt = get_row_value(q_balance_sheet, debt_keys)
+            
+        # 3. Book Value / Stockholders Equity
+        equity_keys = ["Common Stock Equity", "Stockholders Equity", "Total Equity Gross Minority Interest"]
+        equity = get_row_value(annual_balance_sheet, equity_keys)
+        
+        # Extract annual trend for calculations (e.g. latest 4 years)
+        annual_data_list = []
+        if not annual_financials.empty:
+            cols = annual_financials.columns
+            for i, col in enumerate(cols):
+                date_str = str(col.date()) if hasattr(col, "date") else str(col)
+                
+                # Fetch row metrics for this period
+                net_income = get_row_value(annual_financials, ["Net Income"], i)
+                
+                # Cashflow metrics
+                operating_cash_flow = get_row_value(annual_cashflow, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"], i)
+                capex = get_row_value(annual_cashflow, ["Capital Expenditure", "Purchase Of PPE"], i)
+                depreciation = get_row_value(annual_cashflow, ["Depreciation And Amortization", "Depreciation Amortization Depletion", "Depreciation"], i)
+                
+                # Calculate Free Cash Flow (Capex is negative in yfinance, so we use abs or verify sign)
+                capex_val = abs(capex)
+                fcf = operating_cash_flow - capex_val
+                
+                # Calculate Owner Earnings: Net Income + Depreciation - Capex
+                owner_earnings = net_income + depreciation - capex_val
+                
+                annual_data_list.append({
+                    "date": date_str,
+                    "net_income": net_income,
+                    "operating_cash_flow": operating_cash_flow,
+                    "capex": capex,
+                    "depreciation": depreciation,
+                    "free_cash_flow": fcf,
+                    "owner_earnings": owner_earnings
+                })
+                
+        # Calculate growth averages if we have multiple years
+        oe_growth = 0.08  # Default conservative growth rate (8%)
+        if len(annual_data_list) >= 2:
+            growths = []
+            # Calculate year-over-year growth of Owner Earnings
+            for idx in range(len(annual_data_list) - 1):
+                prev = annual_data_list[idx + 1]["owner_earnings"]
+                curr = annual_data_list[idx]["owner_earnings"]
+                if prev > 0:
+                    g = (curr - prev) / prev
+                    growths.append(g)
+            if growths:
+                # Cap default calculated growth between 3% and 15% to be conservative
+                avg_g = float(np.mean(growths))
+                oe_growth = max(0.03, min(0.15, avg_g))
+                
+        # Latest Owner Earnings (Base for DCF)
+        latest_owner_earnings = 0.0
+        if annual_data_list:
+            latest_owner_earnings = annual_data_list[0]["owner_earnings"]
+            # If owner earnings is negative or zero, fall back to Net Income or FCF
+            if latest_owner_earnings <= 0:
+                latest_owner_earnings = max(0.0, annual_data_list[0]["free_cash_flow"])
+            if latest_owner_earnings <= 0:
+                latest_owner_earnings = max(0.0, annual_data_list[0]["net_income"])
+                
+        # Default baseline calculation
+        # 10% discount rate, 8% growth, 2.5% terminal growth, 30% margin of safety
+        baseline_growth = oe_growth
+        baseline_dcf = calculate_dcf(
+            current_price=current_price,
+            shares_outstanding=shares_outstanding,
+            owner_earnings_base=latest_owner_earnings,
+            growth_rate_1_5=baseline_growth,
+            growth_rate_6_10=baseline_growth * 0.8, # slow down slightly in years 6-10
+            discount_rate=0.10,
+            terminal_growth_rate=0.025,
+            cash=cash,
+            debt=debt,
+            margin_of_safety=0.30
+        )
+        
+        # Package full response
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "name": name,
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            "website": info.get("website"),
+            "summary": info.get("longBusinessSummary"),
+            "currency": currency,
+            "current_price": current_price,
+            "market_cap": market_cap,
+            "pe_ratio": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
+            "pb_ratio": info.get("priceToBook"),
+            "dividend_yield": info.get("dividendYield"),
+            "shares_outstanding": shares_outstanding,
+            "balance_sheet_latest": {
+                "cash_and_equivalents": cash,
+                "total_debt": debt,
+                "common_equity": equity
+            },
+            "annual_trends": annual_data_list,
+            "financials_statements": {
+                "income_statement_annual": extract_statement_data(annual_financials),
+                "income_statement_quarterly": extract_statement_data(q_financials),
+                "balance_sheet_annual": extract_statement_data(annual_balance_sheet),
+                "balance_sheet_quarterly": extract_statement_data(q_balance_sheet),
+                "cash_flow_annual": extract_statement_data(annual_cashflow),
+                "cash_flow_quarterly": extract_statement_data(q_cashflow)
+            },
+            "baseline_valuation": baseline_dcf,
+            "calculated_growth_rate": baseline_growth
+        }
+        
+    except Exception as e:
+        print(f"Error fetching data for {symbol}: {str(e)}")
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": f"Error fetching stock data: {str(e)}"
+        }
+
+if __name__ == "__main__":
+    # Test execution
+    res = get_stock_data("AAPL")
+    print("AAPL current price:", res.get("current_price"))
+    print("AAPL baseline valuation intrinsic value per share:", res.get("baseline_valuation", {}).get("intrinsic_value_per_share"))
+    
+    res_in = get_stock_data("RELIANCE.NS")
+    print("RELIANCE current price:", res_in.get("current_price"))
+    print("RELIANCE baseline valuation intrinsic value per share:", res_in.get("baseline_valuation", {}).get("intrinsic_value_per_share"))
