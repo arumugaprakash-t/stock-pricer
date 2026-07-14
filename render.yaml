@@ -1,23 +1,9 @@
 services:
-  # FastAPI backend service
+  # Unified Stock Pricer Service (FastAPI Server + React SPA Frontend)
   - type: web
-    name: stock-pricer-backend
+    name: stock-pricer
     runtime: python
     plan: free
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: cd ../frontend && npm install && npm run build && cd ../backend && pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-
-  # React Vite frontend static site
-  - type: web
-    name: stock-pricer-frontend
-    runtime: static
-    rootDir: frontend
-    buildCommand: npm install && npm run build
-    staticPublishPath: ./dist
-    envVars:
-      - key: VITE_API_URL
-        fromService:
-          type: web
-          name: stock-pricer-backend
-          property: host

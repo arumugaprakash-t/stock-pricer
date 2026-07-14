@@ -63,7 +63,7 @@ function App() {
     setStockData(null);
     try {
       const cleanSymbol = symbol.trim().toUpperCase();
-      const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const apiBaseUrl = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
       const response = await fetch(`${apiBaseUrl}/api/stock/${cleanSymbol}`);
       if (!response.ok) {
         const errDetail = await response.json();
