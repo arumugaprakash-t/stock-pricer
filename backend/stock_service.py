@@ -194,7 +194,17 @@ def get_stock_data(symbol: str):
                 shares_outstanding = safe_int(bal_sheet.loc["Share Issued"].iloc[0])
         
         market_cap = safe_float(info.get("marketCap") or (current_price * shares_outstanding))
-        
+
+        # yfinance returns an empty/placeholder object for unknown tickers instead of
+        # raising. Detect that case and surface a proper "not found" error so the
+        # frontend shows a clean message rather than rendering an empty, broken dashboard.
+        if current_price == 0.0 and shares_outstanding == 0 and market_cap == 0.0:
+            return {
+                "status": "error",
+                "message": f"No data found for '{symbol}'. Check the ticker symbol "
+                           f"(US tickers e.g. AAPL; Indian tickers need a .NS or .BO suffix, e.g. RELIANCE.NS)."
+            }
+
         # Fetch statements
         annual_financials = ticker.financials
         annual_balance_sheet = ticker.balance_sheet

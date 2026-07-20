@@ -377,7 +377,17 @@ function App() {
               </div>
 
               {/* MODELER TAB */}
-              {activeTab === 'modeler' && valuationResult && (
+              {activeTab === 'modeler' && valuationResult && valuationResult.status === 'error' && (
+                <div className="card">
+                  <div className="error-message">
+                    ⚠️ Unable to build a valuation model for this stock. {valuationResult.message}
+                    {' '}Yahoo Finance may not expose enough financial history for this ticker.
+                    Try a large-cap ticker (e.g. AAPL, MSFT, RELIANCE.NS), or check the Financial Statements tab.
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'modeler' && valuationResult && valuationResult.status === 'success' && (
                 <div className="dashboard-grid">
                   {/* Left Column: Sliders & Adjustments */}
                   <div className="card">
@@ -658,7 +668,7 @@ function App() {
                   ) : (
                     <div className="table-wrapper">
                       {getStatementData().length === 0 ? (
-                        <div style={{ padding: '2rem', textAlignment: 'center', color: 'var(--text-secondary)' }}>
+                        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
                           No quarterly cash flow statements available in Yahoo Finance for this ticker. 
                           {stockData.currency === 'INR' && ' Indian exchanges usually restrict quarterly cash flow publications to annual disclosures.'}
                         </div>
@@ -734,7 +744,7 @@ function App() {
 
         {/* Home Intro (Initial screen before search) */}
         {!stockData && !loading && (
-          <div className="card" style={{ textAlignment: 'center', padding: '3rem 2rem' }}>
+          <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
             <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Evaluate Stocks like Warren Buffett</h3>
             <p style={{ color: 'var(--text-secondary)', maxWidth: '700px', margin: '0 auto 2rem auto', lineHeight: '1.6' }}>
               Search for US companies (e.g., Apple, Microsoft, Tesla) or Indian companies (e.g., Reliance Industries, Tata Consultancy Services, Infosys) to view their quarterly/annual financial statements, play with growth sliders, and instantly calculate their intrinsic value using an interactive Discounted Cash Flow (DCF) model.
