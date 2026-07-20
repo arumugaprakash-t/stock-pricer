@@ -137,6 +137,37 @@ main {
   position: relative;
 }
 
+.market-toggle {
+  display: inline-flex;
+  align-self: center;
+  gap: 0.25rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 0.25rem;
+}
+
+.market-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0.4rem 1rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.market-toggle-btn:hover {
+  color: var(--text-primary);
+}
+
+.market-toggle-btn.active {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
 .search-box {
   display: flex;
   background: var(--bg-card);

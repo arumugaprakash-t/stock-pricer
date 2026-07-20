@@ -28,9 +28,20 @@ const formatCurrency = (val, currency = 'USD') => {
 
 const formatPrice = (val, currency = 'USD') => {
   if (val === null || val === undefined) return 'N/A';
-  return currency === 'INR' 
-    ? `₹${val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
+  return currency === 'INR'
+    ? `₹${val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     : `$${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+// Render an ISO timestamp in the viewer's local timezone, e.g. "Jul 20, 2026, 10:19 PM IST"
+const formatTimestamp = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+  });
 };
 
 function App() {
@@ -53,16 +64,40 @@ function App() {
   // Local calculation result state
   const [valuationResult, setValuationResult] = useState(null);
 
-  // Default searches
-  const popularTickers = ['AAPL', 'MSFT', 'TSLA', 'RELIANCE.NS', 'TCS.NS', 'INFY.NS'];
+  // Selected market: 'US' or 'IN'. Drives ticker resolution and quick picks.
+  const [market, setMarket] = useState('US');
 
-  // Handle stock fetch
-  const fetchStock = async (symbol) => {
+  // Per-market config: quick picks use bare tickers; suffix is added on resolve.
+  const MARKETS = {
+    US: {
+      label: '🇺🇸 US',
+      placeholder: 'Enter a US ticker (e.g. AAPL, MSFT, TSLA)',
+      popular: ['AAPL', 'MSFT', 'TSLA', 'GOOGL', 'AMZN', 'NVDA'],
+    },
+    IN: {
+      label: '🇮🇳 India',
+      placeholder: 'Enter an Indian ticker (e.g. INFY, RELIANCE, TCS)',
+      popular: ['INFY', 'RELIANCE', 'TCS', 'HDFCBANK', 'ITC', 'TATAMOTORS'],
+    },
+  };
+
+  // Resolve a user-entered symbol to what Yahoo Finance expects.
+  // India: append .NS (NSE) unless the user already typed an exchange suffix.
+  const resolveSymbol = (raw) => {
+    const clean = raw.trim().toUpperCase();
+    if (market === 'IN' && !clean.endsWith('.NS') && !clean.endsWith('.BO')) {
+      return `${clean}.NS`;
+    }
+    return clean;
+  };
+
+  // Handle stock fetch (accepts a bare, user-entered symbol; resolves it first)
+  const fetchStock = async (rawSymbol) => {
     setLoading(true);
     setError('');
     setStockData(null);
     try {
-      const cleanSymbol = symbol.trim().toUpperCase();
+      const cleanSymbol = resolveSymbol(rawSymbol);
       const apiBaseUrl = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
       const response = await fetch(`${apiBaseUrl}/api/stock/${cleanSymbol}`);
       if (!response.ok) {
@@ -277,10 +312,24 @@ function App() {
       <main>
         {/* Search Widget */}
         <div className="search-container">
+          {/* Market toggle: US vs India */}
+          <div className="market-toggle">
+            {Object.keys(MARKETS).map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={`market-toggle-btn ${market === key ? 'active' : ''}`}
+                onClick={() => setMarket(key)}
+              >
+                {MARKETS[key].label}
+              </button>
+            ))}
+          </div>
+
           <form onSubmit={handleSearchSubmit} className="search-box">
             <input
               type="text"
-              placeholder="Search US tickers (e.g. AAPL, MSFT) or Indian tickers (e.g. RELIANCE.NS, TCS.NS)"
+              placeholder={MARKETS[market].placeholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="search-input"
@@ -290,8 +339,8 @@ function App() {
             </button>
           </form>
           <div className="popular-searches">
-            <span>Quick Stocks:</span>
-            {popularTickers.map((ticker) => (
+            <span>Quick {market === 'IN' ? 'Indian' : 'US'} Stocks:</span>
+            {MARKETS[market].popular.map((ticker) => (
               <span
                 key={ticker}
                 className="popular-tag"
@@ -328,11 +377,16 @@ function App() {
                     {formatPrice(stockData.current_price, stockData.currency)}
                   </div>
                   <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                    Live Price ({stockData.currency})
+                    Price ({stockData.currency})
                   </div>
+                  {stockData.market_data && formatTimestamp(stockData.market_data.quote_time) && (
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.2rem' }}>
+                      Quote as of {formatTimestamp(stockData.market_data.quote_time)}
+                    </div>
+                  )}
                 </div>
               </div>
-              
+
               <div className="metadata-grid">
                 <div className="metadata-item">
                   <div className="metadata-label">Market Cap</div>
@@ -350,6 +404,46 @@ function App() {
                   <div className="metadata-label">PB Ratio</div>
                   <div className="metadata-value">{stockData.pb_ratio ? stockData.pb_ratio.toFixed(2) : 'N/A'}</div>
                 </div>
+                {stockData.market_data && (stockData.market_data.fifty_two_week_low || stockData.market_data.fifty_two_week_high) && (
+                  <div className="metadata-item">
+                    <div className="metadata-label">52-Week Range</div>
+                    <div className="metadata-value">
+                      {formatPrice(stockData.market_data.fifty_two_week_low, stockData.currency)} – {formatPrice(stockData.market_data.fifty_two_week_high, stockData.currency)}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {stockData.market_data && stockData.market_data.performance && (
+                <div className="metadata-grid" style={{ marginTop: '1rem' }}>
+                  {[
+                    { key: '1M', label: '1-Month Return' },
+                    { key: '6M', label: '6-Month Return' },
+                    { key: '1Y', label: '1-Year Return' },
+                    { key: 'YTD', label: 'YTD Return' },
+                  ].map(({ key, label }) => {
+                    const val = stockData.market_data.performance[key];
+                    const has = val !== null && val !== undefined;
+                    return (
+                      <div className="metadata-item" key={key}>
+                        <div className="metadata-label">{label}</div>
+                        <div className="metadata-value" style={{ color: !has ? 'var(--text-muted)' : (val >= 0 ? 'var(--color-buy)' : 'var(--color-sell)') }}>
+                          {has ? `${val >= 0 ? '+' : ''}${val.toFixed(1)}%` : 'N/A'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Source: {stockData.data_source || 'Yahoo Finance'}
+                {stockData.market_data && stockData.market_data.exchange && <> • {stockData.market_data.exchange}</>}
+                {' '}• Live prices may be delayed up to ~15 min. Financial statements reflect the latest reported filings.
+                {stockData.fx_rate_applied && (
+                  <> • Financials reported in {stockData.financial_currency}, converted to {stockData.currency} at {stockData.fx_rate_applied.toFixed(2)}.</>
+                )}
+                {formatTimestamp(stockData.fetched_at) && <> • Fetched {formatTimestamp(stockData.fetched_at)}</>}
               </div>
             </div>
 

@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import traceback
+from datetime import datetime, timezone, timedelta, date
 
 def safe_float(val):
     if pd.isna(val) or val is None:
@@ -37,14 +38,18 @@ def get_row_value(df, alternative_keys, col_idx=0):
                 return safe_float(val)
     return 0.0
 
-def extract_statement_data(df):
+# Row-name fragments that are NOT monetary and must not be FX-converted
+_NON_MONETARY_ROWS = ("shares", "tax rate")
+
+def extract_statement_data(df, fx=1.0):
     """
     Converts a pandas DataFrame statement to a dictionary structure friendly for JSON response.
     Transposes it so dates are keys, and keys contain the metrics.
+    `fx` converts monetary values into the display currency (share-count / ratio rows are left as-is).
     """
     if df is None or df.empty:
         return []
-    
+
     # Transpose so columns are metrics and index is Timestamp/Date
     df_t = df.T
     data = []
@@ -53,7 +58,13 @@ def extract_statement_data(df):
         row_dict = {"date": date_str}
         for col in df_t.columns:
             val = row[col]
-            row_dict[col] = None if pd.isna(val) else float(val)
+            if pd.isna(val):
+                row_dict[col] = None
+            else:
+                v = float(val)
+                if fx != 1.0 and not any(s in str(col).lower() for s in _NON_MONETARY_ROWS):
+                    v = v * fx
+                row_dict[col] = v
         data.append(row_dict)
     return data
 
@@ -160,6 +171,42 @@ def calculate_dcf(
         "sum_pv_flows": float(sum_pv_flows)
     }
 
+def compute_performance(hist, current_price):
+    """
+    Compute trailing price return (%) over long horizons useful for periodic
+    (weekly/monthly/quarterly) investors: 1 month, 6 months, 1 year, and YTD.
+    `hist` is a yfinance history DataFrame (needs ~1y of daily closes).
+    Returns a dict of {label: pct or None}.
+    """
+    perf = {"1M": None, "6M": None, "1Y": None, "YTD": None}
+    if hist is None or hist.empty or not current_price:
+        return perf
+    closes = hist["Close"].dropna()
+    if closes.empty:
+        return perf
+
+    idx_dates = [ts.date() if hasattr(ts, "date") else ts for ts in closes.index]
+    prices = list(closes.values)
+    today = datetime.now(timezone.utc).date()
+    targets = {
+        "1M": today - timedelta(days=30),
+        "6M": today - timedelta(days=182),
+        "1Y": today - timedelta(days=365),
+        "YTD": date(today.year, 1, 1),
+    }
+    for label, tdate in targets.items():
+        past_price = None
+        # last available close on or before the target date
+        for d, p in zip(idx_dates, prices):
+            if d <= tdate:
+                past_price = p
+            else:
+                break
+        if past_price and past_price > 0:
+            perf[label] = float((current_price - past_price) / past_price * 100)
+    return perf
+
+
 def get_stock_data(symbol: str):
     """
     Fetches full stock data from yfinance and performs standard preprocessing.
@@ -205,6 +252,20 @@ def get_stock_data(symbol: str):
                            f"(US tickers e.g. AAPL; Indian tickers need a .NS or .BO suffix, e.g. RELIANCE.NS)."
             }
 
+        # Currency reconciliation: some companies (e.g. Infosys/INFY.NS) report their
+        # financial statements in a different currency (USD) than their share price (INR).
+        # Convert all statement-derived money into the price currency so the DCF is coherent.
+        financial_currency = info.get("financialCurrency") or currency
+        fx_rate = 1.0
+        if financial_currency and financial_currency != currency:
+            try:
+                fx_info = yf.Ticker(f"{financial_currency}{currency}=X").info
+                fx_rate = safe_float(fx_info.get("regularMarketPrice") or fx_info.get("previousClose"))
+                if fx_rate <= 0:
+                    fx_rate = 1.0
+            except Exception:
+                fx_rate = 1.0
+
         # Fetch statements
         annual_financials = ticker.financials
         annual_balance_sheet = ticker.balance_sheet
@@ -236,7 +297,12 @@ def get_stock_data(symbol: str):
         # 3. Book Value / Stockholders Equity
         equity_keys = ["Common Stock Equity", "Stockholders Equity", "Total Equity Gross Minority Interest"]
         equity = get_row_value(annual_balance_sheet, equity_keys)
-        
+
+        # Convert balance-sheet money into the price currency
+        cash *= fx_rate
+        debt *= fx_rate
+        equity *= fx_rate
+
         # Extract annual trend for calculations (e.g. latest 4 years)
         annual_data_list = []
         if not annual_financials.empty:
@@ -244,14 +310,14 @@ def get_stock_data(symbol: str):
             for i, col in enumerate(cols):
                 date_str = str(col.date()) if hasattr(col, "date") else str(col)
                 
-                # Fetch row metrics for this period
-                net_income = get_row_value(annual_financials, ["Net Income"], i)
-                
+                # Fetch row metrics for this period (converted into the price currency)
+                net_income = get_row_value(annual_financials, ["Net Income"], i) * fx_rate
+
                 # Cashflow metrics
-                operating_cash_flow = get_row_value(annual_cashflow, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"], i)
-                capex = get_row_value(annual_cashflow, ["Capital Expenditure", "Purchase Of PPE"], i)
-                depreciation = get_row_value(annual_cashflow, ["Depreciation And Amortization", "Depreciation Amortization Depletion", "Depreciation"], i)
-                
+                operating_cash_flow = get_row_value(annual_cashflow, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"], i) * fx_rate
+                capex = get_row_value(annual_cashflow, ["Capital Expenditure", "Purchase Of PPE"], i) * fx_rate
+                depreciation = get_row_value(annual_cashflow, ["Depreciation And Amortization", "Depreciation Amortization Depletion", "Depreciation"], i) * fx_rate
+
                 # Calculate Free Cash Flow (Capex is negative in yfinance, so we use abs or verify sign)
                 capex_val = abs(capex)
                 fcf = operating_cash_flow - capex_val
@@ -311,9 +377,36 @@ def get_stock_data(symbol: str):
             margin_of_safety=0.30
         )
         
+        # Quote timestamp from Yahoo (epoch seconds) -> ISO 8601 UTC
+        quote_ts = info.get("regularMarketTime")
+        quote_time_iso = None
+        if isinstance(quote_ts, (int, float)) and quote_ts > 0:
+            quote_time_iso = datetime.fromtimestamp(quote_ts, tz=timezone.utc).isoformat()
+
+        # Trailing returns over long horizons (for periodic, long-term investors)
+        try:
+            # 2y so the 1-year anchor date always has a prior close available
+            perf_hist = ticker.history(period="2y")
+        except Exception:
+            perf_hist = None
+        performance = compute_performance(perf_hist, current_price)
+
+        market_meta = {
+            "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+            "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
+            "performance": performance,
+            "exchange": info.get("fullExchangeName") or info.get("exchange"),
+            "quote_time": quote_time_iso,
+        }
+
         # Package full response
         return {
             "status": "success",
+            "data_source": "Yahoo Finance (yfinance)",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "market_data": market_meta,
+            "financial_currency": financial_currency,
+            "fx_rate_applied": fx_rate if fx_rate != 1.0 else None,
             "symbol": symbol,
             "name": name,
             "sector": info.get("sector"),
@@ -335,12 +428,12 @@ def get_stock_data(symbol: str):
             },
             "annual_trends": annual_data_list,
             "financials_statements": {
-                "income_statement_annual": extract_statement_data(annual_financials),
-                "income_statement_quarterly": extract_statement_data(q_financials),
-                "balance_sheet_annual": extract_statement_data(annual_balance_sheet),
-                "balance_sheet_quarterly": extract_statement_data(q_balance_sheet),
-                "cash_flow_annual": extract_statement_data(annual_cashflow),
-                "cash_flow_quarterly": extract_statement_data(q_cashflow)
+                "income_statement_annual": extract_statement_data(annual_financials, fx_rate),
+                "income_statement_quarterly": extract_statement_data(q_financials, fx_rate),
+                "balance_sheet_annual": extract_statement_data(annual_balance_sheet, fx_rate),
+                "balance_sheet_quarterly": extract_statement_data(q_balance_sheet, fx_rate),
+                "cash_flow_annual": extract_statement_data(annual_cashflow, fx_rate),
+                "cash_flow_quarterly": extract_statement_data(q_cashflow, fx_rate)
             },
             "baseline_valuation": baseline_dcf,
             "calculated_growth_rate": baseline_growth
