@@ -267,7 +267,7 @@ function App() {
     <div className="app-container">
       <header>
         <div className="logo">
-          🚀 Antigravity <span>StockPricer</span>
+          🚀 Stock<span>Pricer</span>
         </div>
         <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
           Warren Buffett Intrinsic Value Model (US & India)
