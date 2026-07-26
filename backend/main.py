@@ -57,6 +57,41 @@ def get_stock(symbol: str):
         
     return data
 
+@app.get("/api/opportunities")
+def get_opportunities(market: str = "all"):
+    """
+    Serve the precomputed Opportunities board (ranked undervalued stocks).
+    Reads backend/data/opportunities.json produced by precompute_opportunities.py.
+    `market` filters to 'US', 'IN', or 'all'.
+    """
+    import json
+    path = os.path.join(os.path.dirname(__file__), "data", "opportunities.json")
+    if not os.path.exists(path):
+        return {
+            "status": "empty",
+            "message": "Opportunities have not been computed yet. Run precompute_opportunities.py.",
+            "generated_at": None,
+            "results": [],
+        }
+
+    with open(path) as f:
+        payload = json.load(f)
+
+    results = payload.get("results", [])
+    market = (market or "all").upper()
+    if market in ("US", "IN"):
+        results = [r for r in results if r.get("market") == market]
+
+    return {
+        "status": "success",
+        "generated_at": payload.get("generated_at"),
+        "universe_size": payload.get("universe_size"),
+        "evaluated": payload.get("evaluated"),
+        "count": len(results),
+        "results": results,
+    }
+
+
 @app.post("/api/valuation")
 def post_valuation(req: DCFRequest):
     """

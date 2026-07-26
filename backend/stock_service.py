@@ -254,27 +254,48 @@ def get_stock_data(symbol: str):
 
         # Currency reconciliation: some companies (e.g. Infosys/INFY.NS) report their
         # financial statements in a different currency (USD) than their share price (INR).
-        # Convert all statement-derived money into the price currency so the DCF is coherent.
+        # We may need to convert statement money into the price currency for a coherent DCF.
         financial_currency = info.get("financialCurrency") or currency
-        fx_rate = 1.0
+        fx_rate_candidate = 1.0
         if financial_currency and financial_currency != currency:
             try:
                 fx_info = yf.Ticker(f"{financial_currency}{currency}=X").info
-                fx_rate = safe_float(fx_info.get("regularMarketPrice") or fx_info.get("previousClose"))
-                if fx_rate <= 0:
-                    fx_rate = 1.0
+                fx_rate_candidate = safe_float(fx_info.get("regularMarketPrice") or fx_info.get("previousClose"))
+                if fx_rate_candidate <= 0:
+                    fx_rate_candidate = 1.0
             except Exception:
-                fx_rate = 1.0
+                fx_rate_candidate = 1.0
+        fx_rate = 1.0  # decided below, after we can sanity-check magnitudes
 
         # Fetch statements
         annual_financials = ticker.financials
         annual_balance_sheet = ticker.balance_sheet
         annual_cashflow = ticker.cashflow
-        
+
         q_financials = ticker.quarterly_financials
         q_balance_sheet = ticker.quarterly_balance_sheet
         q_cashflow = ticker.quarterly_cashflow
-        
+
+        # yfinance's `financialCurrency` is unreliable: some tickers (e.g. HCLTECH.NS)
+        # are tagged USD but actually report INR-magnitude numbers, so blindly applying
+        # the FX rate inflates the valuation ~80x. Verify empirically before converting:
+        # compare implied P/E (market cap / net income) with and without conversion
+        # against the reported trailing P/E, and only convert if it genuinely fits better.
+        if fx_rate_candidate != 1.0:
+            ni_raw = get_row_value(annual_financials, ["Net Income"], 0)
+            if ni_raw and ni_raw > 0 and market_cap > 0:
+                pe_raw = market_cap / ni_raw
+                pe_fx = market_cap / (ni_raw * fx_rate_candidate)
+                trailing_pe = safe_float(info.get("trailingPE"))
+                if trailing_pe and trailing_pe > 0:
+                    apply_fx = abs(pe_fx - trailing_pe) < abs(pe_raw - trailing_pe)
+                else:
+                    # No P/E to anchor on: convert only if it moves an absurd P/E into a plausible band
+                    apply_fx = (2 <= pe_fx <= 150) and not (2 <= pe_raw <= 150)
+                fx_rate = fx_rate_candidate if apply_fx else 1.0
+            else:
+                fx_rate = fx_rate_candidate  # cannot verify; fall back to the reported label
+
         # Extracted Balance Sheet items (Latest)
         # 1. Cash & Equivalents
         cash_keys = [
@@ -351,15 +372,18 @@ def get_stock_data(symbol: str):
                 avg_g = float(np.mean(growths))
                 oe_growth = max(0.03, min(0.15, avg_g))
                 
-        # Latest Owner Earnings (Base for DCF)
+        # Owner Earnings base for DCF: normalize over up to the last 3 years to
+        # smooth one-off spikes (e.g. Amazon's capex surges). Mirrors the frontend.
         latest_owner_earnings = 0.0
         if annual_data_list:
-            latest_owner_earnings = annual_data_list[0]["owner_earnings"]
-            # If owner earnings is negative or zero, fall back to Net Income or FCF
+            recent = annual_data_list[:3]
+            avg = lambda key: sum(r[key] for r in recent) / len(recent)
+            latest_owner_earnings = avg("owner_earnings")
+            # If normalized owner earnings is negative or zero, fall back to FCF, then Net Income
             if latest_owner_earnings <= 0:
-                latest_owner_earnings = max(0.0, annual_data_list[0]["free_cash_flow"])
+                latest_owner_earnings = max(0.0, avg("free_cash_flow"))
             if latest_owner_earnings <= 0:
-                latest_owner_earnings = max(0.0, annual_data_list[0]["net_income"])
+                latest_owner_earnings = max(0.0, avg("net_income"))
                 
         # Default baseline calculation
         # 10% discount rate, 8% growth, 2.5% terminal growth, 30% margin of safety

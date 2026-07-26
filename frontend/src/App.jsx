@@ -67,6 +67,15 @@ function App() {
   // Selected market: 'US' or 'IN'. Drives ticker resolution and quick picks.
   const [market, setMarket] = useState('US');
 
+  // Opportunities board (precomputed screen)
+  const [opportunities, setOpportunities] = useState(null);
+  const [opportunitiesMeta, setOpportunitiesMeta] = useState(null);
+  const [opportunitiesLoading, setOpportunitiesLoading] = useState(false);
+  const [oppPage, setOppPage] = useState(0);
+  const OPP_PAGE_SIZE = 10;
+
+  const apiBaseUrl = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+
   // Per-market config: quick picks use bare tickers; suffix is added on resolve.
   const MARKETS = {
     US: {
@@ -98,7 +107,6 @@ function App() {
     setStockData(null);
     try {
       const cleanSymbol = resolveSymbol(rawSymbol);
-      const apiBaseUrl = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
       const response = await fetch(`${apiBaseUrl}/api/stock/${cleanSymbol}`);
       if (!response.ok) {
         const errDetail = await response.json();
@@ -130,6 +138,28 @@ function App() {
     }
   };
 
+  // Load the Opportunities board when no stock is selected, per market filter
+  useEffect(() => {
+    let cancelled = false;
+    const loadOpportunities = async () => {
+      setOpportunitiesLoading(true);
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/opportunities?market=${market}`);
+        const data = await res.json();
+        if (cancelled) return;
+        setOpportunities(data.status === 'success' ? data.results : []);
+        setOpportunitiesMeta(data);
+        setOppPage(0);
+      } catch {
+        if (!cancelled) { setOpportunities([]); setOpportunitiesMeta(null); }
+      } finally {
+        if (!cancelled) setOpportunitiesLoading(false);
+      }
+    };
+    loadOpportunities();
+    return () => { cancelled = true; };
+  }, [market, apiBaseUrl]);
+
   // Recalculate DCF locally when sliders change
   useEffect(() => {
     if (!stockData) return;
@@ -146,11 +176,12 @@ function App() {
       return;
     }
 
-    const latestAnnual = stockData.annual_trends && stockData.annual_trends.length > 0 
-      ? stockData.annual_trends[0] 
-      : null;
+    // Normalize the base over up to the last 3 years to smooth one-off spikes
+    // (e.g. Amazon's capex surges). Average each component so the Maintenance
+    // CapEx slider still applies to the normalized capex.
+    const recentYears = (stockData.annual_trends || []).slice(0, 3);
 
-    if (!latestAnnual) {
+    if (recentYears.length === 0) {
       setValuationResult({
         status: 'error',
         message: 'Missing annual financial trends.'
@@ -158,25 +189,27 @@ function App() {
       return;
     }
 
-    const netIncome = latestAnnual.net_income;
-    const depreciation = latestAnnual.depreciation;
-    const capex = Math.abs(latestAnnual.capex);
-    
+    const avgOf = (fn) => recentYears.reduce((sum, r) => sum + (fn(r) || 0), 0) / recentYears.length;
+    const netIncome = avgOf((r) => r.net_income);
+    const depreciation = avgOf((r) => r.depreciation);
+    const capex = avgOf((r) => Math.abs(r.capex));
+
     // Scale CapEx based on Maintenance CapEx slider
     const scaledCapex = capex * (maintenanceCapexPct / 100);
     let ownerEarningsBase = netIncome + depreciation - scaledCapex;
-    
+
     let fallbackUsed = '';
-    // If owner earnings base is negative, fallback to Free Cash Flow
+    // If owner earnings base is negative, fallback to Free Cash Flow (3-yr avg)
     if (ownerEarningsBase <= 0) {
-      ownerEarningsBase = Math.max(0, latestAnnual.free_cash_flow);
+      ownerEarningsBase = Math.max(0, avgOf((r) => r.free_cash_flow));
       fallbackUsed = 'Free Cash Flow fallback (Owner earnings negative)';
     }
-    // If FCF is also negative, fallback to Net Income
+    // If FCF is also negative, fallback to Net Income (3-yr avg)
     if (ownerEarningsBase <= 0) {
       ownerEarningsBase = Math.max(0, netIncome);
       fallbackUsed = 'Net Income fallback (Owner earnings & FCF negative)';
     }
+    const yearsUsed = recentYears.length;
 
     // Project Cash Flows (Years 1-10)
     const projectedFlows = [];
@@ -263,7 +296,8 @@ function App() {
       terminalValue,
       pvTerminalValue,
       ownerEarningsBase,
-      fallbackUsed
+      fallbackUsed,
+      yearsUsed
     });
 
   }, [stockData, growthRate15, growthRate610, discountRate, terminalGrowthRate, marginOfSafety, maintenanceCapexPct]);
@@ -297,6 +331,16 @@ function App() {
     const keys = Object.keys(dataList[0]).filter(k => k !== 'date');
     return keys;
   };
+
+  // Board shows the full screen, sorted by recommendation (BUY → HOLD → OVERVALUED),
+  // then by upside within each group. The user paginates and decides.
+  const recRank = (rec) => (rec === 'BUY' ? 0 : rec && rec.startsWith('FAIR') ? 1 : 2);
+  const rankedOpps = [...(opportunities || [])].sort((a, b) => {
+    const r = recRank(a.recommendation) - recRank(b.recommendation);
+    return r !== 0 ? r : b.upside_pct - a.upside_pct;
+  });
+  const oppPageCount = Math.ceil(rankedOpps.length / OPP_PAGE_SIZE);
+  const oppPageRows = rankedOpps.slice(oppPage * OPP_PAGE_SIZE, oppPage * OPP_PAGE_SIZE + OPP_PAGE_SIZE);
 
   return (
     <div className="app-container">
@@ -626,7 +670,7 @@ function App() {
                             {formatPrice(valuationResult.intrinsicValuePerShare, stockData.currency)}
                           </div>
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                            Base OE: {formatCurrency(valuationResult.ownerEarningsBase, stockData.currency)}
+                            Base OE ({valuationResult.yearsUsed}-yr avg): {formatCurrency(valuationResult.ownerEarningsBase, stockData.currency)}
                           </div>
                         </div>
                       </div>
@@ -834,6 +878,98 @@ function App() {
               )}
             </div>
           </>
+        )}
+
+        {/* Opportunities Board (home screen, before a stock is selected) */}
+        {!stockData && !loading && (
+          <div className="card">
+            <div className="card-title">
+              💡 Opportunities — {market === 'IN' ? 'Indian' : 'US'} screen, top recommendations first
+              {opportunitiesMeta && opportunitiesMeta.generated_at && (
+                <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--text-muted)' }}>
+                  {rankedOpps.length} stocks of {opportunitiesMeta.universe_size} screened • as of {formatTimestamp(opportunitiesMeta.generated_at)}
+                </span>
+              )}
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '1rem' }}>
+              Every screened stock, sorted by signal (BUY → HOLD → OVERVALUED) then by upside vs. our Buffett intrinsic-value estimate. A screen, not a recommendation — always analyze before buying.
+            </p>
+
+            {opportunitiesLoading ? (
+              <div style={{ padding: '1.5rem', color: 'var(--text-secondary)' }}>Loading opportunities…</div>
+            ) : rankedOpps.length === 0 ? (
+              <div style={{ padding: '1.5rem', color: 'var(--text-secondary)' }}>
+                No screened stocks available for this market yet. Try the other market, or search a specific ticker above.
+              </div>
+            ) : (
+              <>
+                <div className="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Company</th>
+                        <th>Price</th>
+                        <th>Intrinsic Value</th>
+                        <th>Upside</th>
+                        <th>Signal</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {oppPageRows.map((row, i) => (
+                        <tr
+                          key={row.symbol}
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => { setQuery(row.symbol); fetchStock(row.symbol); }}
+                        >
+                          <td>{oppPage * OPP_PAGE_SIZE + i + 1}</td>
+                          <td>
+                            <strong>{row.name || row.symbol}</strong>
+                            <span className="ticker-badge" style={{ marginLeft: '0.5rem' }}>{row.symbol}</span>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{row.sector}</div>
+                          </td>
+                          <td>{formatPrice(row.price, row.currency)}</td>
+                          <td>{formatPrice(row.intrinsic_value, row.currency)}</td>
+                          <td style={{ color: row.upside_pct >= 0 ? 'var(--color-buy)' : 'var(--color-sell)', fontWeight: 700 }}>
+                            {row.upside_pct >= 0 ? '+' : ''}{row.upside_pct.toFixed(1)}%
+                          </td>
+                          <td>
+                            <span className={`badge-recommendation ${row.recommendation === 'BUY' ? 'buy' : row.recommendation && row.recommendation.startsWith('FAIR') ? 'hold' : 'sell'}`} style={{ fontSize: '0.7rem', padding: '0.2rem 0.6rem' }}>
+                              {row.recommendation}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {oppPageCount > 1 && (
+                  <div className="opp-pagination">
+                    <button
+                      type="button"
+                      className="market-toggle-btn"
+                      disabled={oppPage === 0}
+                      onClick={() => setOppPage((p) => Math.max(0, p - 1))}
+                    >
+                      ← Prev
+                    </button>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      Page {oppPage + 1} of {oppPageCount}
+                    </span>
+                    <button
+                      type="button"
+                      className="market-toggle-btn"
+                      disabled={oppPage >= oppPageCount - 1}
+                      onClick={() => setOppPage((p) => Math.min(oppPageCount - 1, p + 1))}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         )}
 
         {/* Home Intro (Initial screen before search) */}
