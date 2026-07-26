@@ -108,11 +108,20 @@ function App() {
     try {
       const cleanSymbol = resolveSymbol(rawSymbol);
       const response = await fetch(`${apiBaseUrl}/api/stock/${cleanSymbol}`);
+
+      // Read the body as text first so a non-JSON response (e.g. a plain "Not Found"
+      // from a misconfigured/unreachable API) yields a clear message, not a JSON parse error.
+      const raw = await response.text();
+      let parsed = null;
+      try { parsed = raw ? JSON.parse(raw) : null; } catch { parsed = null; }
+
       if (!response.ok) {
-        const errDetail = await response.json();
-        throw new Error(errDetail.detail || 'Stock not found');
+        throw new Error((parsed && parsed.detail) || `Stock not found (${response.status})`);
       }
-      const data = await response.json();
+      if (!parsed) {
+        throw new Error('The API returned an unexpected response. The backend may be unreachable — check the API URL configuration.');
+      }
+      const data = parsed;
       setStockData(data);
       
       // Initialize sliders based on backend baseline
