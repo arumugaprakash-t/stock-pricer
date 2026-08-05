@@ -44,12 +44,70 @@ const formatTimestamp = (iso) => {
   });
 };
 
+// --- Quality score helpers ---
+const PILLAR_LABELS = {
+  profitability: 'Profitability & Returns',
+  health: 'Financial Health',
+  consistency: 'Consistency',
+  growth: 'Growth',
+};
+
+// Map a letter grade to the app's signal palette (buy/hold/sell)
+const gradeClass = (grade) => {
+  if (grade === 'A' || grade === 'B') return 'buy';
+  if (grade === 'C') return 'hold';
+  if (grade === 'D' || grade === 'F') return 'sell';
+  return 'hold';
+};
+
+// Map a 0-100 sub-score to a color
+const scoreColor = (score) => {
+  if (score === null || score === undefined) return 'var(--text-muted)';
+  if (score >= 70) return 'var(--color-buy)';
+  if (score >= 40) return 'var(--color-hold)';
+  return 'var(--color-sell)';
+};
+
+const statusIcon = (status) =>
+  status === 'good' ? '✅' : status === 'fair' ? '⚠️' : status === 'weak' ? '❌' : '—';
+
+// Map a named-score band to a palette class
+const bandClass = (band) => {
+  if (band === 'strong' || band === 'safe') return 'buy';
+  if (band === 'moderate' || band === 'grey') return 'hold';
+  if (band === 'weak' || band === 'distress') return 'sell';
+  return 'muted';
+};
+
+// Circular gauge for the composite quality score
+const ScoreRing = ({ score, grade }) => {
+  const r = 52;
+  const circumference = 2 * Math.PI * r;
+  const pct = score === null || score === undefined ? 0 : score;
+  const color = scoreColor(score);
+  return (
+    <svg width="150" height="150" viewBox="0 0 150 150" className="score-ring" role="img" aria-label={`Quality score ${score ?? 'not available'}`}>
+      <circle cx="75" cy="75" r={r} fill="none" stroke="var(--border-color)" strokeWidth="11" />
+      <circle
+        cx="75" cy="75" r={r} fill="none" stroke={color} strokeWidth="11" strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={circumference * (1 - pct / 100)}
+        transform="rotate(-90 75 75)"
+        style={{ transition: 'stroke-dashoffset 0.7s cubic-bezier(0.4,0,0.2,1)' }}
+      />
+      <text x="75" y="72" textAnchor="middle" className="score-ring-num">{score ?? '—'}</text>
+      <text x="75" y="98" textAnchor="middle" className="score-ring-grade" fill={color}>{grade || 'N/A'}</text>
+    </svg>
+  );
+};
+
 function App() {
   const [query, setQuery] = useState('');
   const [stockData, setStockData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('modeler'); // modeler, financials, explainer
+  const [activeTab, setActiveTab] = useState('quality'); // quality, modeler, financials, explainer
+  const [qualityExpanded, setQualityExpanded] = useState(false); // show metric-level evidence
   const [financialSubTab, setFinancialSubTab] = useState('annual_trends'); // annual_trends, income_stmt, balance_sht, cash_flow
   const [financialPeriodType, setFinancialPeriodType] = useState('annual'); // annual or quarterly
 
@@ -72,6 +130,7 @@ function App() {
   const [opportunitiesMeta, setOpportunitiesMeta] = useState(null);
   const [opportunitiesLoading, setOpportunitiesLoading] = useState(false);
   const [oppPage, setOppPage] = useState(0);
+  const [oppSort, setOppSort] = useState('signal'); // signal | upside | quality
   const OPP_PAGE_SIZE = 10;
 
   const apiBaseUrl = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
@@ -344,10 +403,13 @@ function App() {
   // Board shows the full screen, sorted by recommendation (BUY → HOLD → OVERVALUED),
   // then by upside within each group. The user paginates and decides.
   const recRank = (rec) => (rec === 'BUY' ? 0 : rec && rec.startsWith('FAIR') ? 1 : 2);
-  const rankedOpps = [...(opportunities || [])].sort((a, b) => {
-    const r = recRank(a.recommendation) - recRank(b.recommendation);
-    return r !== 0 ? r : b.upside_pct - a.upside_pct;
-  });
+  const oppComparators = {
+    signal: (a, b) => (recRank(a.recommendation) - recRank(b.recommendation)) || (b.upside_pct - a.upside_pct),
+    upside: (a, b) => b.upside_pct - a.upside_pct,
+    quality: (a, b) => ((b.quality_score ?? -1) - (a.quality_score ?? -1)) || (b.upside_pct - a.upside_pct),
+  };
+  const rankedOpps = [...(opportunities || [])].sort(oppComparators[oppSort] || oppComparators.signal);
+  const setOppSortKey = (key) => { setOppSort(key); setOppPage(0); };
   const oppPageCount = Math.ceil(rankedOpps.length / OPP_PAGE_SIZE);
   const oppPageRows = rankedOpps.slice(oppPage * OPP_PAGE_SIZE, oppPage * OPP_PAGE_SIZE + OPP_PAGE_SIZE);
 
@@ -504,6 +566,12 @@ function App() {
             <div className="tab-container">
               <div className="tab-header">
                 <button
+                  className={`tab-btn ${activeTab === 'quality' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('quality')}
+                >
+                  🏆 Business Quality
+                </button>
+                <button
                   className={`tab-btn ${activeTab === 'modeler' ? 'active' : ''}`}
                   onClick={() => setActiveTab('modeler')}
                 >
@@ -522,6 +590,140 @@ function App() {
                   📖 Buffett's Formula Explained
                 </button>
               </div>
+
+              {/* QUALITY TAB */}
+              {activeTab === 'quality' && (
+                <div className="card">
+                  {(!stockData.quality || stockData.quality.composite_score === null || stockData.quality.composite_score === undefined) ? (
+                    <>
+                      <div className="card-title">Business Quality</div>
+                      <div style={{ padding: '1.5rem', color: 'var(--text-secondary)' }}>
+                        Not enough financial data from Yahoo Finance to grade this company's quality reliably.
+                        {stockData.quality && stockData.quality.caveats && stockData.quality.caveats.map((c, i) => (
+                          <div key={i} style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>• {c}</div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="card-title">Business Quality Scorecard</div>
+
+                      {/* Header: composite ring + verdict + named-score badges */}
+                      <div className="quality-header">
+                        <ScoreRing score={stockData.quality.composite_score} grade={stockData.quality.grade} />
+                        <div className="quality-header-info">
+                          <div className={`badge-recommendation ${gradeClass(stockData.quality.grade)}`} style={{ margin: '0 0 0.5rem 0' }}>
+                            {stockData.quality.verdict}
+                          </div>
+                          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', maxWidth: '460px', lineHeight: 1.5 }}>
+                            A composite of profitability, financial health, consistency and growth — Buffett's
+                            "wonderful business" test, judged independently of price. Higher is better.
+                          </p>
+                          <div className="quality-badges">
+                            {stockData.quality.named_scores.piotroski_f && (
+                              <div className={`quality-badge ${bandClass(stockData.quality.named_scores.piotroski_f.band)}`}>
+                                Piotroski F-Score{' '}
+                                <strong>
+                                  {stockData.quality.named_scores.piotroski_f.value !== null
+                                    ? `${stockData.quality.named_scores.piotroski_f.value}/9`
+                                    : 'N/A'}
+                                </strong>
+                                <span className="quality-badge-band">{stockData.quality.named_scores.piotroski_f.band}</span>
+                              </div>
+                            )}
+                            <div className={`quality-badge ${bandClass(stockData.quality.named_scores.altman_z.band)}`}>
+                              Altman Z-Score{' '}
+                              <strong>
+                                {stockData.quality.named_scores.altman_z.value !== null
+                                  ? stockData.quality.named_scores.altman_z.value
+                                  : 'N/A'}
+                              </strong>
+                              <span className="quality-badge-band">{stockData.quality.named_scores.altman_z.band}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Pillar bars */}
+                      <div className="quality-pillars">
+                        {Object.entries(stockData.quality.pillars).map(([key, p]) => (
+                          <div className="pillar-row" key={key}>
+                            <div className="pillar-label">
+                              {PILLAR_LABELS[key] || key}
+                              <span className="pillar-weight">{Math.round(p.weight * 100)}%</span>
+                            </div>
+                            <div className="pillar-track">
+                              <div
+                                className="pillar-fill"
+                                style={{ width: `${p.score ?? 0}%`, background: scoreColor(p.score) }}
+                              />
+                            </div>
+                            <div className="pillar-score" style={{ color: scoreColor(p.score) }}>
+                              {p.score ?? 'N/A'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Evidence toggle */}
+                      <button
+                        type="button"
+                        className="market-toggle-btn"
+                        style={{ marginTop: '1.25rem' }}
+                        onClick={() => setQualityExpanded((v) => !v)}
+                      >
+                        {qualityExpanded ? 'Hide metric detail ▲' : 'Show metric detail ▼'}
+                      </button>
+
+                      {qualityExpanded && (
+                        <div className="table-wrapper" style={{ marginTop: '1rem' }}>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                                <th>Score</th>
+                                <th></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {Object.entries(stockData.quality.pillars).map(([key, p]) => (
+                                <React.Fragment key={key}>
+                                  <tr>
+                                    <td colSpan={4} className="pillar-group-row">
+                                      {PILLAR_LABELS[key] || key}
+                                    </td>
+                                  </tr>
+                                  {p.metrics.map((m) => (
+                                    <tr key={m.key}>
+                                      <td>
+                                        <strong>{m.label}</strong>
+                                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{m.detail}</div>
+                                      </td>
+                                      <td style={{ fontFamily: 'monospace' }}>{m.display}</td>
+                                      <td style={{ color: scoreColor(m.score), fontWeight: 700 }}>{m.score ?? '—'}</td>
+                                      <td>{statusIcon(m.status)}</td>
+                                    </tr>
+                                  ))}
+                                </React.Fragment>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+
+                      {/* Caveats & provenance */}
+                      <div style={{ marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                        Based on {stockData.quality.years_used} years of statements • data completeness{' '}
+                        {Math.round((stockData.quality.data_completeness || 0) * 100)}%
+                        {stockData.quality.caveats && stockData.quality.caveats.map((c, i) => (
+                          <div key={i} style={{ marginTop: '0.35rem' }}>• {c}</div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* MODELER TAB */}
               {activeTab === 'modeler' && valuationResult && valuationResult.status === 'error' && (
@@ -920,8 +1122,15 @@ function App() {
                         <th>Company</th>
                         <th>Price</th>
                         <th>Intrinsic Value</th>
-                        <th>Upside</th>
-                        <th>Signal</th>
+                        <th className="opp-sortable" onClick={() => setOppSortKey('upside')}>
+                          Upside{oppSort === 'upside' ? ' ▼' : ''}
+                        </th>
+                        <th className="opp-sortable" onClick={() => setOppSortKey('quality')}>
+                          Quality{oppSort === 'quality' ? ' ▼' : ''}
+                        </th>
+                        <th className="opp-sortable" onClick={() => setOppSortKey('signal')}>
+                          Signal{oppSort === 'signal' ? ' ▼' : ''}
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -941,6 +1150,15 @@ function App() {
                           <td>{formatPrice(row.intrinsic_value, row.currency)}</td>
                           <td style={{ color: row.upside_pct >= 0 ? 'var(--color-buy)' : 'var(--color-sell)', fontWeight: 700 }}>
                             {row.upside_pct >= 0 ? '+' : ''}{row.upside_pct.toFixed(1)}%
+                          </td>
+                          <td>
+                            {row.quality_grade ? (
+                              <span className={`quality-badge ${gradeClass(row.quality_grade)}`} style={{ padding: '0.15rem 0.55rem', fontSize: '0.72rem' }}>
+                                <strong>{row.quality_grade}</strong> {row.quality_score}
+                              </span>
+                            ) : (
+                              <span style={{ color: 'var(--text-muted)' }}>—</span>
+                            )}
                           </td>
                           <td>
                             <span className={`badge-recommendation ${row.recommendation === 'BUY' ? 'buy' : row.recommendation && row.recommendation.startsWith('FAIR') ? 'hold' : 'sell'}`} style={{ fontSize: '0.7rem', padding: '0.2rem 0.6rem' }}>

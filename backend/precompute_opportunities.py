@@ -57,6 +57,8 @@ def evaluate(symbol, market):
 
     upside_pct = (intrinsic - price) / price * 100
 
+    quality = data.get("quality") or {}
+
     return {
         "symbol": symbol,
         "market": market,
@@ -69,6 +71,8 @@ def evaluate(symbol, market):
         "upside_pct": round(upside_pct, 1),
         "recommendation": baseline.get("recommendation"),
         "pe_ratio": data.get("pe_ratio"),
+        "quality_score": quality.get("composite_score"),
+        "quality_grade": quality.get("grade"),
     }
 
 

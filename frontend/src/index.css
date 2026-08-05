@@ -740,3 +740,127 @@ tr:hover td {
   text-align: center;
   margin: 1rem 0;
 }
+
+/* ===== Business Quality Scorecard ===== */
+.quality-header {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+
+.score-ring {
+  flex-shrink: 0;
+}
+.score-ring-num {
+  font-size: 2.4rem;
+  font-weight: 800;
+  fill: var(--text-primary);
+}
+.score-ring-grade {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.quality-header-info {
+  flex: 1;
+  min-width: 260px;
+}
+
+.quality-badges {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+.quality-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 99px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border-color);
+  background: rgba(10, 12, 16, 0.4);
+  color: var(--text-secondary);
+}
+.quality-badge strong { color: var(--text-primary); }
+.quality-badge-band {
+  text-transform: capitalize;
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
+.quality-badge.buy { border-color: var(--color-buy); color: var(--color-buy); background: var(--color-buy-bg); }
+.quality-badge.hold { border-color: var(--color-hold); color: var(--color-hold); background: var(--color-hold-bg); }
+.quality-badge.sell { border-color: var(--color-sell); color: var(--color-sell); background: var(--color-sell-bg); }
+.quality-badge.buy strong, .quality-badge.hold strong, .quality-badge.sell strong { color: inherit; }
+
+.quality-pillars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  margin-top: 0.5rem;
+}
+.pillar-row {
+  display: grid;
+  grid-template-columns: 220px 1fr 44px;
+  align-items: center;
+  gap: 1rem;
+}
+.pillar-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.pillar-weight {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  background: rgba(10, 12, 16, 0.5);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.05rem 0.35rem;
+}
+.pillar-track {
+  height: 10px;
+  background: var(--border-color);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.pillar-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pillar-score {
+  font-weight: 800;
+  font-family: monospace;
+  text-align: right;
+}
+
+.opp-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.opp-sortable:hover { color: var(--accent-blue); }
+
+.pillar-group-row {
+  font-weight: 700;
+  color: var(--accent-blue);
+  background: rgba(10, 12, 16, 0.4);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+@media (max-width: 640px) {
+  .pillar-row { grid-template-columns: 130px 1fr 40px; gap: 0.6rem; }
+  .pillar-label { font-size: 0.8rem; flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+  .quality-header { gap: 1rem; }
+}
